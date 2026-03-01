@@ -1,3 +1,6 @@
+"""
+Deep Monte Carlo (DMC) training for 4-player Doudizhu.
+"""
 import os
 import threading
 import time
@@ -12,9 +15,18 @@ from torch import nn
 
 from .file_writer import FileWriter
 from .models import Model
-from .utils import get_batch, log, create_env, create_buffers, create_optimizers, act
+from .utils import get_batch, log, create_env, create_buffers, create_optimizers, act, POSITIONS
 
-mean_episode_return_buf = {p:deque(maxlen=100) for p in ['landlord', 'landlord_up', 'landlord_down']}
+mean_episode_return_buf = {p: deque(maxlen=100) for p in POSITIONS}
+
+
+def format_progress_bar(current, total, width=30):
+    if total <= 0:
+        return '[' + ('-' * width) + ']', 0.0
+    ratio = max(0.0, min(1.0, float(current) / float(total)))
+    filled = int(width * ratio)
+    bar = '[' + ('=' * filled) + ('-' * (width - filled)) + ']'
+    return bar, ratio * 100.0
 
 def compute_loss(logits, targets):
     loss = ((logits.squeeze(-1) - targets)**2).mean()
@@ -103,8 +115,8 @@ def train(flags):
     full_queue = {}
         
     for device in device_iterator:
-        _free_queue = {'landlord': ctx.SimpleQueue(), 'landlord_up': ctx.SimpleQueue(), 'landlord_down': ctx.SimpleQueue()}
-        _full_queue = {'landlord': ctx.SimpleQueue(), 'landlord_up': ctx.SimpleQueue(), 'landlord_down': ctx.SimpleQueue()}
+        _free_queue = {p: ctx.SimpleQueue() for p in POSITIONS}
+        _full_queue = {p: ctx.SimpleQueue() for p in POSITIONS}
         free_queue[device] = _free_queue
         full_queue[device] = _full_queue
 
@@ -114,24 +126,21 @@ def train(flags):
     # Create optimizers
     optimizers = create_optimizers(flags, learner_model)
 
-    # Stat Keys
-    stat_keys = [
-        'mean_episode_return_landlord',
-        'loss_landlord',
-        'mean_episode_return_landlord_up',
-        'loss_landlord_up',
-        'mean_episode_return_landlord_down',
-        'loss_landlord_down',
-    ]
+    # Stat Keys for 4 positions
+    stat_keys = []
+    for p in POSITIONS:
+        stat_keys.append(f'mean_episode_return_{p}')
+        stat_keys.append(f'loss_{p}')
+    
     frames, stats = 0, {k: 0 for k in stat_keys}
-    position_frames = {'landlord':0, 'landlord_up':0, 'landlord_down':0}
+    position_frames = {p: 0 for p in POSITIONS}
 
     # Load models if any
     if flags.load_model and os.path.exists(checkpointpath):
         checkpoint_states = torch.load(
             checkpointpath, map_location=("cuda:"+str(flags.training_device) if flags.training_device != "cpu" else "cpu")
         )
-        for k in ['landlord', 'landlord_up', 'landlord_down']:
+        for k in POSITIONS:
             learner_model.get_model(k).load_state_dict(checkpoint_states["model_state_dict"][k])
             optimizers[k].load_state_dict(checkpoint_states["optimizer_state_dict"][k])
             for device in device_iterator:
@@ -170,19 +179,18 @@ def train(flags):
 
     for device in device_iterator:
         for m in range(flags.num_buffers):
-            free_queue[device]['landlord'].put(m)
-            free_queue[device]['landlord_up'].put(m)
-            free_queue[device]['landlord_down'].put(m)
+            for p in POSITIONS:
+                free_queue[device][p].put(m)
 
     threads = []
     locks = {}
     for device in device_iterator:
-        locks[device] = {'landlord': threading.Lock(), 'landlord_up': threading.Lock(), 'landlord_down': threading.Lock()}
-    position_locks = {'landlord': threading.Lock(), 'landlord_up': threading.Lock(), 'landlord_down': threading.Lock()}
+        locks[device] = {p: threading.Lock() for p in POSITIONS}
+    position_locks = {p: threading.Lock() for p in POSITIONS}
 
     for device in device_iterator:
         for i in range(flags.num_threads):
-            for position in ['landlord', 'landlord_up', 'landlord_down']:
+            for position in POSITIONS:
                 thread = threading.Thread(
                     target=batch_and_learn, name='batch-and-learn-%d' % i, args=(i,device,position,locks[device][position],position_locks[position]))
                 thread.start()
@@ -203,7 +211,7 @@ def train(flags):
         }, checkpointpath)
 
         # Save the weights for evaluation purpose
-        for position in ['landlord', 'landlord_up', 'landlord_down']:
+        for position in POSITIONS:
             model_weights_dir = os.path.expandvars(os.path.expanduser(
                 '%s/%s/%s' % (flags.savedir, flags.xpid, position+'_weights_'+str(frames)+'.ckpt')))
             torch.save(learner_model.get_model(position).state_dict(), model_weights_dir)
@@ -230,16 +238,26 @@ def train(flags):
             fps_avg = np.mean(fps_log)
 
             position_fps = {k:(position_frames[k]-position_start_frames[k])/(end_time-start_time) for k in position_frames}
-            log.info('After %i (L:%i U:%i D:%i) frames: @ %.1f fps (avg@ %.1f fps) (L:%.1f U:%.1f D:%.1f) Stats:\n%s',
+            progress_bar, progress_pct = format_progress_bar(frames, flags.total_frames)
+            remaining_frames = max(flags.total_frames - frames, 0)
+            eta_seconds = int(remaining_frames / fps_avg) if fps_avg > 0 else -1
+            eta_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds)) if eta_seconds >= 0 else 'N/A'
+            log.info('%s %.2f%% | %i/%i frames | ETA %s | (L:%i N:%i A:%i P:%i) @ %.1f fps (avg@ %.1f fps) (L:%.1f N:%.1f A:%.1f P:%.1f) Stats:\n%s',
+                     progress_bar,
+                     progress_pct,
                      frames,
+                     flags.total_frames,
+                     eta_str,
                      position_frames['landlord'],
-                     position_frames['landlord_up'],
-                     position_frames['landlord_down'],
+                     position_frames['landlord_next'],
+                     position_frames['landlord_across'],
+                     position_frames['landlord_prev'],
                      fps,
                      fps_avg,
                      position_fps['landlord'],
-                     position_fps['landlord_up'],
-                     position_fps['landlord_down'],
+                     position_fps['landlord_next'],
+                     position_fps['landlord_across'],
+                     position_fps['landlord_prev'],
                      pprint.pformat(stats))
 
     except KeyboardInterrupt:

@@ -1,12 +1,15 @@
+"""
+Evaluation simulation for 4-player Doudizhu.
+"""
 import multiprocessing as mp
 import pickle
 
-from douzero.env.game import GameEnv
+from douzero.env.game import GameEnv, POSITIONS
 
 def load_card_play_models(card_play_model_path_dict):
     players = {}
 
-    for position in ['landlord', 'landlord_up', 'landlord_down']:
+    for position in POSITIONS:
         if card_play_model_path_dict[position] == 'rlcard':
             from .rlcard_agent import RLCardAgent
             players[position] = RLCardAgent(position)
@@ -42,7 +45,7 @@ def data_allocation_per_worker(card_play_data_list, num_workers):
 
     return card_play_data_list_each_worker
 
-def evaluate(landlord, landlord_up, landlord_down, eval_data, num_workers):
+def evaluate(landlord, landlord_next, landlord_across, landlord_prev, eval_data, num_workers):
 
     with open(eval_data, 'rb') as f:
         card_play_data_list = pickle.load(f)
@@ -53,8 +56,10 @@ def evaluate(landlord, landlord_up, landlord_down, eval_data, num_workers):
 
     card_play_model_path_dict = {
         'landlord': landlord,
-        'landlord_up': landlord_up,
-        'landlord_down': landlord_down}
+        'landlord_next': landlord_next,
+        'landlord_across': landlord_across,
+        'landlord_prev': landlord_prev,
+    }
 
     num_landlord_wins = 0
     num_farmer_wins = 0
@@ -85,4 +90,4 @@ def evaluate(landlord, landlord_up, landlord_down, eval_data, num_workers):
     print('WP results:')
     print('landlord : Farmers - {} : {}'.format(num_landlord_wins / num_total_wins, num_farmer_wins / num_total_wins))
     print('ADP results:')
-    print('landlord : Farmers - {} : {}'.format(num_landlord_scores / num_total_wins, 2 * num_farmer_scores / num_total_wins)) 
+    print('landlord : Farmers - {} : {}'.format(num_landlord_scores / num_total_wins, 3 * num_farmer_scores / num_total_wins)) 

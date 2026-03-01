@@ -1,3 +1,6 @@
+"""
+Utility functions for 4-player Doudizhu DMC training.
+"""
 import os 
 import typing
 import logging
@@ -12,6 +15,9 @@ from torch import multiprocessing as mp
 from .env_utils import Environment
 from douzero.env import Env
 from douzero.env.env import _cards2array
+
+# 4-player positions
+POSITIONS = ['landlord', 'landlord_next', 'landlord_across', 'landlord_prev']
 
 Card2Column = {3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7,
                11: 8, 12: 9, 13: 10, 14: 11, 17: 12}
@@ -61,11 +67,10 @@ def get_batch(free_queue,
 
 def create_optimizers(flags, learner_model):
     """
-    Create three optimizers for the three positions
+    Create four optimizers for the four positions in 4-player Doudizhu.
     """
-    positions = ['landlord', 'landlord_up', 'landlord_down']
     optimizers = {}
-    for position in positions:
+    for position in POSITIONS:
         optimizer = torch.optim.RMSprop(
             learner_model.parameters(position),
             lr=flags.learning_rate,
@@ -77,24 +82,29 @@ def create_optimizers(flags, learner_model):
 
 def create_buffers(flags, device_iterator):
     """
-    We create buffers for different positions as well as
-    for different devices (i.e., GPU). That is, each device
-    will have three buffers for the three positions.
+    Create buffers for 4-player Doudizhu training.
+    Each device will have four buffers for the four positions.
+    
+    Feature dimensions:
+    - Landlord x_no_action: 364 dims
+    - Farmer x_no_action: 369 dims
+    - Action encoding: 52 dims (no jokers)
+    - LSTM input z: 5 x 208 (5 rounds x 4 players x 52 cards)
     """
     T = flags.unroll_length
-    positions = ['landlord', 'landlord_up', 'landlord_down']
     buffers = {}
     for device in device_iterator:
         buffers[device] = {}
-        for position in positions:
-            x_dim = 319 if position == 'landlord' else 430
+        for position in POSITIONS:
+            # Landlord: 366, Farmers: 370
+            x_dim = 366 if position == 'landlord' else 370
             specs = dict(
                 done=dict(size=(T,), dtype=torch.bool),
                 episode_return=dict(size=(T,), dtype=torch.float32),
                 target=dict(size=(T,), dtype=torch.float32),
                 obs_x_no_action=dict(size=(T, x_dim), dtype=torch.int8),
-                obs_action=dict(size=(T, 54), dtype=torch.int8),
-                obs_z=dict(size=(T, 5, 162), dtype=torch.int8),
+                obs_action=dict(size=(T, 52), dtype=torch.int8),  # 52 cards, no jokers
+                obs_z=dict(size=(T, 5, 208), dtype=torch.int8),   # 5 rounds x 4 players x 52 cards
             )
             _buffers: Buffers = {key: [] for key in specs}
             for _ in range(flags.num_buffers):
@@ -109,11 +119,9 @@ def create_buffers(flags, device_iterator):
 
 def act(i, device, free_queue, full_queue, model, buffers, flags):
     """
-    This function will run forever until we stop it. It will generate
-    data from the environment and send the data to buffer. It uses
-    a free queue and full queue to syncup with the main process.
+    Actor process for 4-player Doudizhu.
+    Generates data from the environment and sends to buffer.
     """
-    positions = ['landlord', 'landlord_up', 'landlord_down']
     try:
         T = flags.unroll_length
         log.info('Device %s Actor %i started.', str(device), i)
@@ -121,13 +129,13 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
         env = create_env(flags)
         env = Environment(env, device)
 
-        done_buf = {p: [] for p in positions}
-        episode_return_buf = {p: [] for p in positions}
-        target_buf = {p: [] for p in positions}
-        obs_x_no_action_buf = {p: [] for p in positions}
-        obs_action_buf = {p: [] for p in positions}
-        obs_z_buf = {p: [] for p in positions}
-        size = {p: 0 for p in positions}
+        done_buf = {p: [] for p in POSITIONS}
+        episode_return_buf = {p: [] for p in POSITIONS}
+        target_buf = {p: [] for p in POSITIONS}
+        obs_x_no_action_buf = {p: [] for p in POSITIONS}
+        obs_action_buf = {p: [] for p in POSITIONS}
+        obs_z_buf = {p: [] for p in POSITIONS}
+        size = {p: 0 for p in POSITIONS}
 
         position, obs, env_output = env.initial()
 
@@ -143,19 +151,20 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
                 size[position] += 1
                 position, obs, env_output = env.step(action)
                 if env_output['done']:
-                    for p in positions:
+                    for p in POSITIONS:
                         diff = size[p] - len(target_buf[p])
                         if diff > 0:
                             done_buf[p].extend([False for _ in range(diff-1)])
                             done_buf[p].append(True)
 
+                            # Landlord gets positive reward, farmers get negative
                             episode_return = env_output['episode_return'] if p == 'landlord' else -env_output['episode_return']
                             episode_return_buf[p].extend([0.0 for _ in range(diff-1)])
                             episode_return_buf[p].append(episode_return)
                             target_buf[p].extend([episode_return for _ in range(diff)])
                     break
 
-            for p in positions:
+            for p in POSITIONS:
                 while size[p] > T: 
                     index = free_queue[p].get()
                     if index is None:
