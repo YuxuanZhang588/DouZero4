@@ -259,6 +259,10 @@ class GameEnv(object):
             all_moves = mg.gen_type_11_serial_3_1(repeat_num=rival_move_len)
             moves = ms.filter_type_11_serial_3_1(all_moves, rival_move)
 
+        elif rival_move_type == md.TYPE_13_4_2:
+            all_moves = mg.gen_type_13_4_2()
+            moves = ms.filter_type_13_4_2(all_moves, rival_move)
+
         # Add bombs if not already facing a bomb (bombs beat everything except bigger bombs)
         if rival_move_type not in [md.TYPE_0_PASS, md.TYPE_4_BOMB]:
             moves = moves + mg.gen_type_4_bomb()

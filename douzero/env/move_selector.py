@@ -76,3 +76,8 @@ def filter_type_10_serial_triple(moves, rival_move):
 def filter_type_11_serial_3_1(moves, rival_move):
     """Filter plane with wings that beat rival plane with wings."""
     return common_handle(moves, rival_move)
+
+
+def filter_type_13_4_2(moves, rival_move):
+    """Filter four-with-two (四带二) that beat rival four-with-two."""
+    return common_handle(moves, rival_move)

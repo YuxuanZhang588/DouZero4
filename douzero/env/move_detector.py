@@ -4,6 +4,7 @@ Detects the type of a move considering that '3' can substitute for any rank.
 """
 from douzero.env.utils import *
 import collections
+import itertools
 
 # Wildcard is rank 3
 WILD = WILDCARD_RANK  # 3
@@ -339,6 +340,42 @@ def _classify_serial_3_1(move, num_triples):
     return (None, False)
 
 
+def _classify_4_2(move):
+    """
+    Check if move is four-of-a-kind with two kicker cards (6 cards total, 四带二).
+    The two kickers can be any two cards (two singles or a pair).
+    Returns (quad_rank, is_valid).
+    """
+    if len(move) != 6:
+        return (None, False)
+
+    wilds = _num_wild(move)
+    non_wild_counter = _non_wild_counts(move)
+
+    # Try each non-wild rank as the quad rank, highest rank first
+    for rank in sorted(non_wild_counter.keys(), reverse=True):
+        nat = non_wild_counter[rank]
+        need = max(0, 4 - nat)  # wildcards needed to complete the quad
+        if need > wilds:
+            continue
+        used_nat = min(nat, 4)
+        used_wilds = need
+        remaining_of_rank = nat - used_nat
+        remaining_wilds = wilds - used_wilds
+        other_nat = sum(v for r, v in non_wild_counter.items() if r != rank)
+        total_remaining = remaining_of_rank + remaining_wilds + other_nat
+        if total_remaining == 2:
+            return (rank, True)
+
+    # All-wildcard quad: four 3s (wilds) + 2 remaining
+    if wilds >= 4:
+        remaining_count = (wilds - 4) + sum(non_wild_counter.values())
+        if remaining_count == 2:
+            return (WILD, True)
+
+    return (None, False)
+
+
 def get_move_type(move):
     """
     Detect the type of a move in 4-player Doudizhu with wildcard '3'.
@@ -390,6 +427,13 @@ def get_move_type(move):
         if valid:
             return {'type': TYPE_8_SERIAL_SINGLE, 'rank': start, 'len': length}
     
+    # Check four with two kickers (四带二, exactly 6 cards) — before serial pairs/triples
+    # to give four-with-two priority when wildcards make a hand ambiguous.
+    if move_size == 6:
+        rank, valid = _classify_4_2(move)
+        if valid:
+            return {'type': TYPE_13_4_2, 'rank': rank}
+
     # Check serial pairs (3+ consecutive pairs)
     if move_size >= MIN_PAIRS * 2 and move_size % 2 == 0:
         num_pairs = move_size // 2
@@ -411,7 +455,7 @@ def get_move_type(move):
             start, valid = _classify_serial_3_1(move, num_triples)
             if valid:
                 return {'type': TYPE_11_SERIAL_3_1, 'rank': start, 'len': num_triples}
-    
+
     return {'type': TYPE_15_WRONG}
 
 
@@ -422,7 +466,7 @@ def get_move_effective_rank(move, move_type_info=None):
     """
     if move_type_info is None:
         move_type_info = get_move_type(move)
-    
+
     return move_type_info.get('rank', 0)
 
 

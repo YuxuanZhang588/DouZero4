@@ -247,15 +247,15 @@ def _cards2array(list_cards):
 
 def _action_seq_list2array(action_seq_list):
     """
-    Encode historical moves for LSTM input.
+    Encode historical moves for ResNet input.
     4-player: encode 20 actions (5 rounds x 4 players).
-    Output shape: (20, 52) reshaped to (5, 208).
+    Output shape: (20, 52) — 20 individual moves, each a 52-dim card encoding.
+    This is used as Conv1D input with in_channels=20, length=52.
     """
     action_seq_array = np.zeros((len(action_seq_list), 52))
     for row, list_cards in enumerate(action_seq_list):
         action_seq_array[row, :] = _cards2array(list_cards)
-    action_seq_array = action_seq_array.reshape(5, 208)  # 5 rounds x 4 players x 52 cards
-    return action_seq_array
+    return action_seq_array  # Shape: (20, 52)
 
 def _process_action_seq(sequence, length=20):
     """
@@ -294,8 +294,9 @@ def _get_obs_landlord(infoset):
     - bomb_num: 15 (one-hot)
     - my_action: 52 (action encoding)
     
-    Total x_batch: 52*6 + 13*3 + 15 + 52 = 416 dims
-    Total x_no_action: 52*6 + 13*3 + 15 = 364 dims
+    Total x_batch: 52*6 + 13*3 + 15 + 52 = 418 dims (6*52=312 + 3*13=39 + 15 + 52)
+    Total x_no_action: 52*6 + 13*3 + 15 = 366 dims
+    z shape: (20, 52) — 20 moves × 52-dim card encoding
     """
     num_legal_actions = len(infoset.legal_actions)
     
@@ -424,8 +425,9 @@ def _get_obs_farmer(infoset, position):
     - bomb_num: 15
     - my_action: 52
     
-    Total x_batch: 52*6 + 17 + 13*2 + 15 + 52 = 421 dims
-    Total x_no_action: 52*6 + 17 + 13*2 + 15 = 369 dims
+    Total x_batch: 52*6 + 17 + 13*2 + 15 + 52 = 422 dims (6*52=312 + 17+26+15 + 52)
+    Total x_no_action: 52*6 + 17 + 13*2 + 15 = 370 dims
+    z shape: (20, 52) — 20 moves × 52-dim card encoding
     """
     # Define teammate order based on position
     # Order: landlord -> landlord_next -> landlord_across -> landlord_prev -> landlord ...

@@ -22,7 +22,7 @@ TYPE_9_SERIAL_PAIR = 9
 TYPE_10_SERIAL_TRIPLE = 10
 TYPE_11_SERIAL_3_1 = 11
 # TYPE_12_SERIAL_3_2 removed (not supported in 4-player)
-# TYPE_13_4_2 removed (not supported in 4-player)
+TYPE_13_4_2 = 13       # Four of a kind with two kicker cards (四带二)
 # TYPE_14_4_22 removed (not supported in 4-player)
 TYPE_15_WRONG = 15
 

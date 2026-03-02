@@ -86,17 +86,16 @@ def create_buffers(flags, device_iterator):
     Each device will have four buffers for the four positions.
     
     Feature dimensions:
-    - Landlord x_no_action: 364 dims
-    - Farmer x_no_action: 369 dims
+    - Landlord x_no_action: 366 dims  (6*52 + 3*13 + 15)
+    - Farmer x_no_action: 370 dims    (6*52 + 17 + 2*13 + 15)
     - Action encoding: 52 dims (no jokers)
-    - LSTM input z: 5 x 208 (5 rounds x 4 players x 52 cards)
+    - ResNet input z: 20 x 52 (20 individual moves x 52-dim card encoding)
     """
     T = flags.unroll_length
     buffers = {}
     for device in device_iterator:
         buffers[device] = {}
         for position in POSITIONS:
-            # Landlord: 366, Farmers: 370
             x_dim = 366 if position == 'landlord' else 370
             specs = dict(
                 done=dict(size=(T,), dtype=torch.bool),
@@ -104,7 +103,7 @@ def create_buffers(flags, device_iterator):
                 target=dict(size=(T,), dtype=torch.float32),
                 obs_x_no_action=dict(size=(T, x_dim), dtype=torch.int8),
                 obs_action=dict(size=(T, 52), dtype=torch.int8),  # 52 cards, no jokers
-                obs_z=dict(size=(T, 5, 208), dtype=torch.int8),   # 5 rounds x 4 players x 52 cards
+                obs_z=dict(size=(T, 20, 52), dtype=torch.int8),   # 20 moves x 52-dim card encoding
             )
             _buffers: Buffers = {key: [] for key in specs}
             for _ in range(flags.num_buffers):

@@ -302,6 +302,35 @@ class MovesGener(object):
         
         return serial_3_1_moves
 
+    def gen_type_13_4_2(self):
+        """
+        Generate all four-of-a-kind with two kicker cards (四带二).
+        The two kickers can be any 2 cards (two singles or a pair).
+        """
+        result = []
+        seen = set()
+
+        for bomb in self.bomb_moves:
+            bomb_counter = collections.Counter(bomb)
+
+            # Find remaining cards after using the bomb
+            remaining = []
+            for rank, count in self.cards_dict.items():
+                leftover = count - bomb_counter.get(rank, 0)
+                remaining.extend([rank] * leftover)
+
+            if len(remaining) < 2:
+                continue
+
+            # Select 2 kicker cards from remaining
+            for kickers in itertools.combinations(remaining, 2):
+                move = tuple(sorted(list(bomb) + list(kickers)))
+                if move not in seen:
+                    result.append(list(move))
+                    seen.add(move)
+
+        return result
+
     def gen_moves(self):
         """Generate all possible moves from the hand."""
         moves = []
@@ -314,4 +343,5 @@ class MovesGener(object):
         moves.extend(self.gen_type_9_serial_pair())
         moves.extend(self.gen_type_10_serial_triple())
         moves.extend(self.gen_type_11_serial_3_1())
+        moves.extend(self.gen_type_13_4_2())
         return moves

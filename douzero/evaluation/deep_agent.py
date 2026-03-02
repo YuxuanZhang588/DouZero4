@@ -7,14 +7,15 @@ def _load_model(position, model_path):
     from douzero.dmc.models import model_dict
     model = model_dict[position]()
     model_state_dict = model.state_dict()
-    if torch.cuda.is_available():
+    use_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
+    if use_cuda:
         pretrained = torch.load(model_path, map_location='cuda:0')
     else:
         pretrained = torch.load(model_path, map_location='cpu')
     pretrained = {k: v for k, v in pretrained.items() if k in model_state_dict}
     model_state_dict.update(pretrained)
     model.load_state_dict(model_state_dict)
-    if torch.cuda.is_available():
+    if use_cuda:
         model.cuda()
     model.eval()
     return model
@@ -32,7 +33,7 @@ class DeepAgent:
 
         z_batch = torch.from_numpy(obs['z_batch']).float()
         x_batch = torch.from_numpy(obs['x_batch']).float()
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and torch.cuda.device_count() > 0:
             z_batch, x_batch = z_batch.cuda(), x_batch.cuda()
         y_pred = self.model.forward(z_batch, x_batch, return_value=True)['values']
         y_pred = y_pred.detach().cpu().numpy()
