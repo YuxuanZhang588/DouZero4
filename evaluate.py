@@ -21,14 +21,27 @@ if __name__ == '__main__':
             default='eval_data.pkl')
     parser.add_argument('--num_workers', type=int, default=5)
     parser.add_argument('--gpu_device', type=str, default='')
+    parser.add_argument('--legacy', action='store_true',
+            help='Load ALL checkpoints as legacy LSTM models (pre-ResNet)')
+    parser.add_argument('--legacy_positions', type=str, default='',
+            help='Comma-separated positions to load as legacy LSTM, e.g. landlord,landlord_next')
     args = parser.parse_args()
 
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_device
+
+    from douzero.env.game import POSITIONS
+    if args.legacy:
+        legacy_positions = set(POSITIONS)
+    elif args.legacy_positions:
+        legacy_positions = {p.strip() for p in args.legacy_positions.split(',') if p.strip()}
+    else:
+        legacy_positions = set()
 
     evaluate(args.landlord,
              args.landlord_next,
              args.landlord_across,
              args.landlord_prev,
              args.eval_data,
-             args.num_workers)
+             args.num_workers,
+             legacy_positions=legacy_positions)

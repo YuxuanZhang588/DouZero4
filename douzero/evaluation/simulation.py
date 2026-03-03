@@ -6,7 +6,13 @@ import pickle
 
 from douzero.env.game import GameEnv, POSITIONS
 
-def load_card_play_models(card_play_model_path_dict):
+def load_card_play_models(card_play_model_path_dict, legacy_positions=None):
+    """
+    Load models for each position.
+    legacy_positions: set of position names to load as legacy LSTM models.
+    """
+    if legacy_positions is None:
+        legacy_positions = set()
     players = {}
 
     for position in POSITIONS:
@@ -18,12 +24,13 @@ def load_card_play_models(card_play_model_path_dict):
             players[position] = RandomAgent()
         else:
             from .deep_agent import DeepAgent
-            players[position] = DeepAgent(position, card_play_model_path_dict[position])
+            legacy = position in legacy_positions
+            players[position] = DeepAgent(position, card_play_model_path_dict[position], legacy=legacy)
     return players
 
-def mp_simulate(card_play_data_list, card_play_model_path_dict, q):
+def mp_simulate(card_play_data_list, card_play_model_path_dict, q, legacy_positions=None):
 
-    players = load_card_play_models(card_play_model_path_dict)
+    players = load_card_play_models(card_play_model_path_dict, legacy_positions)
 
     env = GameEnv(players)
     for idx, card_play_data in enumerate(card_play_data_list):
@@ -45,7 +52,7 @@ def data_allocation_per_worker(card_play_data_list, num_workers):
 
     return card_play_data_list_each_worker
 
-def evaluate(landlord, landlord_next, landlord_across, landlord_prev, eval_data, num_workers):
+def evaluate(landlord, landlord_next, landlord_across, landlord_prev, eval_data, num_workers, legacy_positions=None):
 
     with open(eval_data, 'rb') as f:
         card_play_data_list = pickle.load(f)
@@ -72,7 +79,7 @@ def evaluate(landlord, landlord_next, landlord_across, landlord_prev, eval_data,
     for card_paly_data in card_play_data_list_each_worker:
         p = ctx.Process(
                 target=mp_simulate,
-                args=(card_paly_data, card_play_model_path_dict, q))
+                args=(card_paly_data, card_play_model_path_dict, q, legacy_positions))
         p.start()
         processes.append(p)
 

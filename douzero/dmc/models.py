@@ -213,6 +213,75 @@ class BidModel(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Legacy LSTM models (used by old checkpoints trained before ResNet migration)
+# z input shape: (batch, 5, 208)  — 5 rounds × 4 players × 52 cards (LSTM)
+# ---------------------------------------------------------------------------
+
+class LegacyLandlordModel(nn.Module):
+    """Original LSTM-based Landlord model. x_batch = 366+52 = 418 dims."""
+    def __init__(self):
+        super().__init__()
+        self.lstm   = nn.LSTM(208, 128, batch_first=True)
+        self.dense1 = nn.Linear(546, 512)  # 128 + 418
+        self.dense2 = nn.Linear(512, 512)
+        self.dense3 = nn.Linear(512, 512)
+        self.dense4 = nn.Linear(512, 512)
+        self.dense5 = nn.Linear(512, 512)
+        self.dense6 = nn.Linear(512, 1)
+
+    def forward(self, z, x, return_value=False, flags=None):
+        lstm_out, _ = self.lstm(z)
+        lstm_out = lstm_out[:, -1, :]
+        x = torch.cat([lstm_out, x], dim=-1)
+        x = torch.relu(self.dense1(x))
+        x = torch.relu(self.dense2(x))
+        x = torch.relu(self.dense3(x))
+        x = torch.relu(self.dense4(x))
+        x = torch.relu(self.dense5(x))
+        x = self.dense6(x)
+        if return_value:
+            return dict(values=x)
+        action = torch.argmax(x, dim=0)[0]
+        return dict(action=action)
+
+
+class LegacyFarmerModel(nn.Module):
+    """Original LSTM-based Farmer model. x_batch = 370+52 = 422 dims."""
+    def __init__(self):
+        super().__init__()
+        self.lstm   = nn.LSTM(208, 128, batch_first=True)
+        self.dense1 = nn.Linear(550, 512)  # 128 + 422
+        self.dense2 = nn.Linear(512, 512)
+        self.dense3 = nn.Linear(512, 512)
+        self.dense4 = nn.Linear(512, 512)
+        self.dense5 = nn.Linear(512, 512)
+        self.dense6 = nn.Linear(512, 1)
+
+    def forward(self, z, x, return_value=False, flags=None):
+        lstm_out, _ = self.lstm(z)
+        lstm_out = lstm_out[:, -1, :]
+        x = torch.cat([lstm_out, x], dim=-1)
+        x = torch.relu(self.dense1(x))
+        x = torch.relu(self.dense2(x))
+        x = torch.relu(self.dense3(x))
+        x = torch.relu(self.dense4(x))
+        x = torch.relu(self.dense5(x))
+        x = self.dense6(x)
+        if return_value:
+            return dict(values=x)
+        action = torch.argmax(x, dim=0)[0]
+        return dict(action=action)
+
+
+legacy_model_dict = {
+    'landlord':        LegacyLandlordModel,
+    'landlord_next':   LegacyFarmerModel,
+    'landlord_across': LegacyFarmerModel,
+    'landlord_prev':   LegacyFarmerModel,
+}
+
+
+# ---------------------------------------------------------------------------
 # model_dict — used by deep_agent for evaluation
 # ---------------------------------------------------------------------------
 
