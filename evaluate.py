@@ -25,6 +25,9 @@ if __name__ == '__main__':
             help='Load ALL checkpoints as legacy LSTM models (pre-ResNet)')
     parser.add_argument('--legacy_positions', type=str, default='',
             help='Comma-separated positions to load as legacy LSTM, e.g. landlord,landlord_next')
+    parser.add_argument('--z_encoder', type=str, default='resnet',
+            choices=['resnet', 'transformer'],
+            help='z-history encoder backend used when training the checkpoint (default: resnet)')
     args = parser.parse_args()
 
     os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
@@ -44,4 +47,5 @@ if __name__ == '__main__':
              args.landlord_prev,
              args.eval_data,
              args.num_workers,
-             legacy_positions=legacy_positions)
+             legacy_positions=legacy_positions,
+             z_encoder=args.z_encoder)

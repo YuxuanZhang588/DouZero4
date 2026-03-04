@@ -4,13 +4,13 @@ import numpy as np
 from douzero.env.env import get_obs
 
 
-def _load_model(position, model_path, legacy=False):
+def _load_model(position, model_path, legacy=False, z_encoder='resnet'):
     if legacy:
         from douzero.dmc.models import legacy_model_dict
         model = legacy_model_dict[position]()
     else:
         from douzero.dmc.models import model_dict
-        model = model_dict[position]()
+        model = model_dict[position](z_encoder=z_encoder)
     model_state_dict = model.state_dict()
     use_cuda = torch.cuda.is_available() and torch.cuda.device_count() > 0
     if use_cuda:
@@ -30,10 +30,11 @@ class DeepAgent:
     """
     Deep model agent for evaluation.
     Set legacy=True to load old LSTM checkpoints (z will be reshaped
-    from the current (B,20,52) env format to the old (B,5,208) LSTM format).
+    from the current (B,32,52) env format to the old (B,5,208) LSTM format).
+    Set z_encoder='transformer' when loading transformer-branch checkpoints.
     """
-    def __init__(self, position, model_path, legacy=False):
-        self.model  = _load_model(position, model_path, legacy=legacy)
+    def __init__(self, position, model_path, legacy=False, z_encoder='resnet'):
+        self.model  = _load_model(position, model_path, legacy=legacy, z_encoder=z_encoder)
         self.legacy = legacy
 
     def act(self, infoset):
