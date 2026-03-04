@@ -1,7 +1,9 @@
 """
 Utility functions for 4-player Doudizhu DMC training.
 """
-import os 
+import os
+import glob
+import random
 import typing
 import logging
 import traceback
@@ -18,6 +20,7 @@ from douzero.env.env import _cards2array
 
 # 4-player positions
 POSITIONS = ['landlord', 'landlord_next', 'landlord_across', 'landlord_prev']
+FARMER_POSITIONS = ['landlord_next', 'landlord_across', 'landlord_prev']
 
 Card2Column = {3: 0, 4: 1, 5: 2, 6: 3, 7: 4, 8: 5, 9: 6, 10: 7,
                11: 8, 12: 9, 13: 10, 14: 11, 17: 12}
@@ -68,12 +71,18 @@ def get_batch(free_queue,
 def create_optimizers(flags, learner_model):
     """
     Create four optimizers for the four positions in 4-player Doudizhu.
+    Landlord uses flags.learning_rate_landlord if set, otherwise falls back
+    to flags.learning_rate (same as farmers).
     """
     optimizers = {}
     for position in POSITIONS:
+        lr = (flags.learning_rate_landlord
+              if position == 'landlord'
+              and getattr(flags, 'learning_rate_landlord', None) is not None
+              else flags.learning_rate)
         optimizer = torch.optim.RMSprop(
             learner_model.parameters(position),
-            lr=flags.learning_rate,
+            lr=lr,
             momentum=flags.momentum,
             eps=flags.epsilon,
             alpha=flags.alpha)
@@ -138,18 +147,64 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
 
         position, obs, env_output = env.initial()
 
+        # ── Opponent pool (per actor process) ──────────────────────────────
+        pool_prob     = getattr(flags, 'opponent_pool_prob', 0.0)
+        pool_interval = getattr(flags, 'opponent_pool_interval', 300)
+        pool_enabled  = pool_prob > 0
+        pool_models_local = {p: None for p in FARMER_POSITIONS}
+        episodes_since_refresh = pool_interval   # trigger load immediately
+
         while True:
+            # Refresh pool every pool_interval episodes
+            if pool_enabled and episodes_since_refresh >= pool_interval:
+                savedir = os.path.join(flags.savedir, flags.xpid)
+                for pos in FARMER_POSITIONS:
+                    ckpts = sorted(glob.glob(
+                        os.path.join(savedir, pos + '_weights_*.ckpt')))
+                    if ckpts:
+                        # Prefer older checkpoints (exclude latest) for diversity
+                        candidates = ckpts[:-1] if len(ckpts) > 1 else ckpts
+                        try:
+                            from .models import FarmerResNetModel
+                            m = FarmerResNetModel()
+                            m.load_state_dict(
+                                torch.load(random.choice(candidates),
+                                           map_location='cpu'),
+                                strict=False)
+                            m.eval()
+                            pool_models_local[pos] = m
+                        except Exception:
+                            pool_models_local[pos] = None
+                episodes_since_refresh = 0
+
             while True:
                 obs_x_no_action_buf[position].append(env_output['obs_x_no_action'])
                 obs_z_buf[position].append(env_output['obs_z'])
                 with torch.no_grad():
-                    agent_output = model.forward(position, obs['z_batch'], obs['x_batch'], flags=flags)
+                    if (pool_enabled
+                            and position in FARMER_POSITIONS
+                            and pool_models_local[position] is not None
+                            and random.random() < pool_prob):
+                        # Historical opponent: use pool model with farmer epsilon
+                        eps = getattr(flags, 'exp_epsilon_farmers', flags.exp_epsilon)
+                        agent_output = pool_models_local[position].forward(
+                            obs['z_batch'].cpu(), obs['x_batch'].cpu(),
+                            flags=flags, exp_epsilon=eps)
+                    else:
+                        # Current model with position-specific epsilon
+                        eps = (getattr(flags, 'exp_epsilon_farmers', flags.exp_epsilon)
+                               if position in FARMER_POSITIONS
+                               else flags.exp_epsilon)
+                        agent_output = model.forward(
+                            position, obs['z_batch'], obs['x_batch'],
+                            flags=flags, exp_epsilon=eps)
                 _action_idx = int(agent_output['action'].cpu().detach().numpy())
                 action = obs['legal_actions'][_action_idx]
                 obs_action_buf[position].append(_cards2tensor(action))
                 size[position] += 1
                 position, obs, env_output = env.step(action)
                 if env_output['done']:
+                    episodes_since_refresh += 1
                     for p in POSITIONS:
                         diff = size[p] - len(target_buf[p])
                         if diff > 0:

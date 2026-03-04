@@ -141,13 +141,23 @@ def train(flags):
             checkpointpath, map_location=("cuda:"+str(flags.training_device) if flags.training_device != "cpu" else "cpu")
         )
         for k in POSITIONS:
-            learner_model.get_model(k).load_state_dict(checkpoint_states["model_state_dict"][k])
-            optimizers[k].load_state_dict(checkpoint_states["optimizer_state_dict"][k])
+            # Use strict=False to gracefully handle architecture changes
+            # (e.g., added conv biases, removed BN affine params)
+            missing, unexpected = learner_model.get_model(k).load_state_dict(
+                checkpoint_states["model_state_dict"][k], strict=False)
+            if missing:
+                log.info(f"  [{k}] Missing keys (freshly initialised): {missing}")
+            if unexpected:
+                log.info(f"  [{k}] Unexpected keys (ignored): {unexpected}")
+            try:
+                optimizers[k].load_state_dict(checkpoint_states["optimizer_state_dict"][k])
+            except (ValueError, KeyError) as e:
+                log.info(f"  [{k}] Optimizer state incompatible ({e}), starting fresh optimizer.")
             for device in device_iterator:
                 models[device].get_model(k).load_state_dict(learner_model.get_model(k).state_dict())
-        stats = checkpoint_states["stats"]
+        stats.update(checkpoint_states["stats"])  # merge; keeps zero defaults for missing keys
         frames = checkpoint_states["frames"]
-        position_frames = checkpoint_states["position_frames"]
+        position_frames = checkpoint_states.get("position_frames", {p: 0 for p in POSITIONS})
         log.info(f"Resuming preempted job, current stats:\n{stats}")
 
     # Starting actor processes

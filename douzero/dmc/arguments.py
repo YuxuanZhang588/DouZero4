@@ -46,10 +46,20 @@ parser.add_argument('--max_grad_norm', default=40., type=float,
 
 # Optimizer settings
 parser.add_argument('--learning_rate', default=0.0001, type=float,
-                    help='Learning rate')
+                    help='Learning rate (farmers)')
+parser.add_argument('--learning_rate_landlord', default=None, type=float,
+                    help='Learning rate for landlord (defaults to --learning_rate if not set)')
 parser.add_argument('--alpha', default=0.99, type=float,
                     help='RMSProp smoothing constant')
 parser.add_argument('--momentum', default=0, type=float,
                     help='RMSProp momentum')
 parser.add_argument('--epsilon', default=1e-5, type=float,
                     help='RMSProp epsilon')
+
+# Asymmetric exploration & opponent pool
+parser.add_argument('--exp_epsilon_farmers', default=0.05, type=float,
+                    help='Exploration epsilon for farmer positions (default 0.05, higher than landlord to give landlord learning signal)')
+parser.add_argument('--opponent_pool_prob', default=0.3, type=float,
+                    help='Probability that a farmer position in an actor uses a historical checkpoint instead of the current model (0 = disabled)')
+parser.add_argument('--opponent_pool_interval', default=300, type=int,
+                    help='Re-sample the opponent pool every N episodes per actor')

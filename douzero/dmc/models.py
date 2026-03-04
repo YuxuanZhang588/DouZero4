@@ -36,25 +36,30 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------------
 
 class BasicBlock(nn.Module):
-    """1-D ResNet basic block (two Conv1d layers with a residual shortcut)."""
+    """1-D ResNet basic block (two Conv1d layers with a residual shortcut).
+
+    Uses affine=False BatchNorm to prevent the learnable gamma parameter from
+    collapsing to zero during training (a known issue with BN in residual nets).
+    Fixed gamma=1 / beta=0 keeps normalization benefits without the collapse.
+    """
     expansion = 1
 
     def __init__(self, in_planes: int, planes: int, stride: int = 1):
         super().__init__()
         self.conv1 = nn.Conv1d(in_planes, planes, kernel_size=3,
-                               stride=stride, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm1d(planes)
+                               stride=stride, padding=1, bias=True)
+        self.bn1   = nn.BatchNorm1d(planes, affine=False)
         self.conv2 = nn.Conv1d(planes, planes, kernel_size=3,
-                               stride=1, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm1d(planes)
+                               stride=1, padding=1, bias=True)
+        self.bn2   = nn.BatchNorm1d(planes, affine=False)
 
         # Shortcut: identity when dims match, 1×1 Conv otherwise
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion * planes:
             self.shortcut = nn.Sequential(
                 nn.Conv1d(in_planes, self.expansion * planes,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm1d(self.expansion * planes),
+                          kernel_size=1, stride=stride, bias=True),
+                nn.BatchNorm1d(self.expansion * planes, affine=False),
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -77,8 +82,8 @@ class _ZEncoder(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        self.conv1  = nn.Conv1d(20, 40, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1    = nn.BatchNorm1d(40)
+        self.conv1  = nn.Conv1d(20, 40, kernel_size=3, stride=2, padding=1, bias=True)
+        self.bn1    = nn.BatchNorm1d(40, affine=False)
         self.layer1 = BasicBlock(40,  40,  stride=2)
         self.layer2 = BasicBlock(40,  80,  stride=2)
         self.layer3 = BasicBlock(80,  160, stride=2)
@@ -103,7 +108,7 @@ class LandlordResNetModel(nn.Module):
 
     z input : (batch, 20, 52)  — card-history encoding
     x input : (batch, 418)     — x_no_action (366) + action card encoding (52)
-    output  : (batch, 1)       — estimated value
+    output  : (batch, 1)       — estimated Q-value (Dueling: V(s) + A(s,a) - mean_A)
     """
     _Z_FEAT  = 640   # flattened ResNet output
     _X_DIM   = 418   # landlord x_batch width
@@ -112,23 +117,38 @@ class LandlordResNetModel(nn.Module):
         super().__init__()
         self.z_encoder = _ZEncoder()
         combined = self._Z_FEAT + self._X_DIM   # 1058
-        self.fc1 = nn.Linear(combined, 512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 512)
-        self.fc4 = nn.Linear(512, 1)
+        # Shared advantage trunk
+        self.fc1  = nn.Linear(combined, 512)
+        self.ln1  = nn.LayerNorm(512)
+        self.fc2  = nn.Linear(512, 512)
+        self.ln2  = nn.LayerNorm(512)
+        self.fc3  = nn.Linear(512, 512)
+        self.ln3  = nn.LayerNorm(512)
+        self.fc4  = nn.Linear(512, 1)              # advantage head (name kept for compat)
+        # Dueling value branch (state-only, no action info)
+        self.fc_v1 = nn.Linear(self._Z_FEAT, 256)
+        self.fc_v2 = nn.Linear(256, 1)
 
     def forward(self, z: torch.Tensor, x: torch.Tensor,
-                return_value: bool = False, flags=None) -> dict:
-        z_feat = self.z_encoder(z)               # (batch, 640)
-        feat   = torch.cat([z_feat, x], dim=-1)  # (batch, 1058)
-        feat   = F.leaky_relu(self.fc1(feat))
-        feat   = F.leaky_relu(self.fc2(feat))
-        feat   = F.leaky_relu(self.fc3(feat))
-        values = self.fc4(feat)                  # (batch, 1)
+                return_value: bool = False, flags=None,
+                exp_epsilon: float = None) -> dict:
+        z_feat = self.z_encoder(z)                            # (batch, 640)
+        # Advantage stream: concat z_feat with action features
+        feat   = torch.cat([z_feat, x], dim=-1)               # (batch, 1058)
+        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))       # (batch, 512)
+        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))       # (batch, 512)
+        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))       # (batch, 512)
+        adv    = self.fc4(feat)                               # (batch, 1)
+        # Value stream: state-only (z_feat, same for all candidate actions)
+        val    = F.leaky_relu(self.fc_v1(z_feat))             # (batch, 256)
+        val    = self.fc_v2(val)                              # (batch, 1)
+        # Dueling combination: Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
+        values = val + adv - adv.mean(dim=0, keepdim=True)    # (batch, 1)
         if return_value:
             return dict(values=values)
-        if flags is not None and flags.exp_epsilon > 0 \
-                and np.random.rand() < flags.exp_epsilon:
+        eps = exp_epsilon if exp_epsilon is not None else (
+              flags.exp_epsilon if flags is not None else 0.0)
+        if eps > 0 and np.random.rand() < eps:
             action = torch.randint(values.shape[0], (1,))[0]
         else:
             action = torch.argmax(values, dim=0)[0]
@@ -142,7 +162,7 @@ class FarmerResNetModel(nn.Module):
 
     z input : (batch, 20, 52)  — card-history encoding
     x input : (batch, 422)     — x_no_action (370) + action card encoding (52)
-    output  : (batch, 1)       — estimated value
+    output  : (batch, 1)       — estimated Q-value (Dueling: V(s) + A(s,a) - mean_A)
     """
     _Z_FEAT  = 640   # flattened ResNet output
     _X_DIM   = 422   # farmer x_batch width
@@ -151,23 +171,38 @@ class FarmerResNetModel(nn.Module):
         super().__init__()
         self.z_encoder = _ZEncoder()
         combined = self._Z_FEAT + self._X_DIM   # 1062
-        self.fc1 = nn.Linear(combined, 512)
-        self.fc2 = nn.Linear(512, 512)
-        self.fc3 = nn.Linear(512, 512)
-        self.fc4 = nn.Linear(512, 1)
+        # Shared advantage trunk
+        self.fc1  = nn.Linear(combined, 512)
+        self.ln1  = nn.LayerNorm(512)
+        self.fc2  = nn.Linear(512, 512)
+        self.ln2  = nn.LayerNorm(512)
+        self.fc3  = nn.Linear(512, 512)
+        self.ln3  = nn.LayerNorm(512)
+        self.fc4  = nn.Linear(512, 1)              # advantage head (name kept for compat)
+        # Dueling value branch (state-only, no action info)
+        self.fc_v1 = nn.Linear(self._Z_FEAT, 256)
+        self.fc_v2 = nn.Linear(256, 1)
 
     def forward(self, z: torch.Tensor, x: torch.Tensor,
-                return_value: bool = False, flags=None) -> dict:
-        z_feat = self.z_encoder(z)               # (batch, 640)
-        feat   = torch.cat([z_feat, x], dim=-1)  # (batch, 1062)
-        feat   = F.leaky_relu(self.fc1(feat))
-        feat   = F.leaky_relu(self.fc2(feat))
-        feat   = F.leaky_relu(self.fc3(feat))
-        values = self.fc4(feat)                  # (batch, 1)
+                return_value: bool = False, flags=None,
+                exp_epsilon: float = None) -> dict:
+        z_feat = self.z_encoder(z)                            # (batch, 640)
+        # Advantage stream: concat z_feat with action features
+        feat   = torch.cat([z_feat, x], dim=-1)               # (batch, 1062)
+        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))       # (batch, 512)
+        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))       # (batch, 512)
+        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))       # (batch, 512)
+        adv    = self.fc4(feat)                               # (batch, 1)
+        # Value stream: state-only (z_feat, same for all candidate actions)
+        val    = F.leaky_relu(self.fc_v1(z_feat))             # (batch, 256)
+        val    = self.fc_v2(val)                              # (batch, 1)
+        # Dueling combination: Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
+        values = val + adv - adv.mean(dim=0, keepdim=True)    # (batch, 1)
         if return_value:
             return dict(values=values)
-        if flags is not None and flags.exp_epsilon > 0 \
-                and np.random.rand() < flags.exp_epsilon:
+        eps = exp_epsilon if exp_epsilon is not None else (
+              flags.exp_epsilon if flags is not None else 0.0)
+        if eps > 0 and np.random.rand() < eps:
             action = torch.randint(values.shape[0], (1,))[0]
         else:
             action = torch.argmax(values, dim=0)[0]
@@ -312,8 +347,9 @@ class Model:
         self.models['landlord_prev']   = FarmerResNetModel().to(dev)
 
     def forward(self, position: str, z: torch.Tensor, x: torch.Tensor,
-                training: bool = False, flags=None) -> dict:
-        return self.models[position].forward(z, x, training, flags)
+                training: bool = False, flags=None,
+                exp_epsilon: float = None) -> dict:
+        return self.models[position].forward(z, x, training, flags, exp_epsilon)
 
     def share_memory(self):
         for m in self.models.values():
