@@ -166,7 +166,8 @@ def act(i, device, free_queue, full_queue, model, buffers, flags):
                         candidates = ckpts[:-1] if len(ckpts) > 1 else ckpts
                         try:
                             from .models import FarmerResNetModel
-                            m = FarmerResNetModel()
+                            z_enc = getattr(flags, 'z_encoder', 'resnet')
+                            m = FarmerResNetModel(z_encoder=z_enc)
                             m.load_state_dict(
                                 torch.load(random.choice(candidates),
                                            map_location='cpu'),

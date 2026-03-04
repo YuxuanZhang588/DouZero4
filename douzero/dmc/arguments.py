@@ -56,6 +56,11 @@ parser.add_argument('--momentum', default=0, type=float,
 parser.add_argument('--epsilon', default=1e-5, type=float,
                     help='RMSProp epsilon')
 
+# Architecture
+parser.add_argument('--z_encoder', default='resnet', type=str,
+                    choices=['resnet', 'transformer'],
+                    help='z-history encoder backend: resnet (Conv1d) or transformer (self-attention)')
+
 # Asymmetric exploration & opponent pool
 parser.add_argument('--exp_epsilon_farmers', default=0.05, type=float,
                     help='Exploration epsilon for farmer positions (default 0.05, higher than landlord to give landlord learning signal)')

@@ -99,8 +99,9 @@ def train(flags):
 
     # Initialize actor models
     models = {}
+    z_enc = getattr(flags, 'z_encoder', 'resnet')
     for device in device_iterator:
-        model = Model(device=device)
+        model = Model(device=device, z_encoder=z_enc)
         model.share_memory()
         model.eval()
         models[device] = model
@@ -121,7 +122,8 @@ def train(flags):
         full_queue[device] = _full_queue
 
     # Learner model for training
-    learner_model = Model(device=flags.training_device)
+    learner_model = Model(device=flags.training_device,
+                          z_encoder=getattr(flags, 'z_encoder', 'resnet'))
 
     # Create optimizers
     optimizers = create_optimizers(flags, learner_model)

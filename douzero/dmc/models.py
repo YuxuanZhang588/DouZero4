@@ -1,13 +1,11 @@
 """
-ResNet-based neural network models for 4-player Doudizhu DMC training.
-Architecture adapted from https://github.com/Vincentzyx/Douzero_Resnet
+Neural network models for 4-player Doudizhu DMC training.
+Supports two z-encoder backends (selectable via --z_encoder):
 
-Four play models: landlord, landlord_next, landlord_across, landlord_prev.
-One optional BidModel for future bidding phase support.
+  resnet      : 1-D Conv ResNet over 20-token card history (default)
+  transformer : Multi-head self-attention Transformer encoder
 
-z input shape : (batch, 20, 52)  — 20 individual moves × 52-dim card encoding
-               Conv1d treats dim-0 as channels (20) and dim-1 as length (52).
-
+──────────────────────────────────────────────────────────────────────
 ResNet pipeline (z):
   conv1  : Conv1d(20 → 40, k=3, s=2, p=1)  → (batch, 40, 26)
   layer1 : BasicBlock(40  → 40,  stride=2)  → (batch,  40, 13)
@@ -15,13 +13,25 @@ ResNet pipeline (z):
   layer3 : BasicBlock(80  → 160, stride=2)  → (batch, 160,  4)
   flatten                                    → (batch, 640)
 
+Transformer pipeline (z):
+  proj   : Linear(52, 128)                  → (batch, 20, 128)
+  + learned positional embedding (20, 128)
+  encoder: TransformerEncoder(d=128, heads=4, layers=4, ff=512)
+  mean-pool over 20 tokens                  → (batch, 128)
+  out_proj: Linear(128, 640)                → (batch, 640)
+
+Both encoders output (batch, 640) — identical downstream FC head.
+──────────────────────────────────────────────────────────────────────
+z input shape : (batch, 20, 52)  — 20 individual moves × 52-dim card encoding
 x input (x_batch = x_no_action + action card encoding):
   Landlord : 366 + 52 = 418 dims
   Farmers  : 370 + 52 = 422 dims
 
-FC head (concat z-feat with x):
-  Landlord : Linear(640+418=1058, 512) → 512 → 512 → 512 → 1
+FC head (Dueling, concat z-feat with x):
+  Landlord : Linear(640+418=1058, 512) → 512 → 512 → 512 → 1  (advantage)
+             Linear(640→256→1)                                  (value)
   Farmers  : Linear(640+422=1062, 512) → 512 → 512 → 512 → 1
+             Linear(640→256→1)
 """
 
 import numpy as np
@@ -71,12 +81,12 @@ class BasicBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Shared ResNet feature extractor for z
+# z-encoder backends
 # ---------------------------------------------------------------------------
 
 class _ZEncoder(nn.Module):
     """
-    Shared ResNet encoder for the card-history tensor z.
+    ResNet encoder for the card-history tensor z.
     Input : (batch, 20, 52)
     Output: (batch, 640)
     """
@@ -98,24 +108,99 @@ class _ZEncoder(nn.Module):
         return out.flatten(1)                         # (batch, 640)
 
 
+class _ZEncoderTransformer(nn.Module):
+    """
+    Transformer encoder for the card-history tensor z.
+
+    Each of the 20 tokens represents one historical card play (52-dim).
+    Self-attention lets every token attend to every other token, capturing
+    long-range dependencies that Conv1d with limited receptive field cannot.
+
+    Architecture:
+      proj     : Linear(52, d_model)            token projection
+      pos_emb  : Embedding(20, d_model)         learned turn-order embedding
+      player_emb: Embedding(4, d_model)         learned player-ID embedding
+                  (turn i belongs to player i%4 relative to current player)
+      encoder  : TransformerEncoder(d_model, nhead, num_layers, dim_feedforward)
+      mean-pool over sequence → Linear(d_model, 640)
+
+    Input : (batch, 20, 52)
+    Output: (batch, 640)
+    """
+    N_TOKENS  = 20
+    CARD_DIM  = 52
+    N_PLAYERS = 4
+
+    def __init__(self, d_model: int = 128, nhead: int = 4,
+                 num_layers: int = 4, dim_feedforward: int = 512,
+                 dropout: float = 0.0):
+        super().__init__()
+        self.d_model = d_model
+
+        # Token projection
+        self.proj      = nn.Linear(self.CARD_DIM, d_model)
+        # Positional + player-ID embeddings (both learned)
+        self.pos_emb    = nn.Embedding(self.N_TOKENS, d_model)
+        self.player_emb = nn.Embedding(self.N_PLAYERS, d_model)
+        # Register position indices and player indices as buffers
+        self.register_buffer('_pos_ids',
+            torch.arange(self.N_TOKENS))              # (20,)
+        self.register_buffer('_player_ids',
+            torch.arange(self.N_TOKENS) % self.N_PLAYERS)  # (20,)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True,
+            norm_first=True,          # Pre-LN (more stable than post-LN)
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers,
+            norm=nn.LayerNorm(d_model),
+        )
+
+        # Output projection to match ResNet's 640-dim interface
+        self.out_proj = nn.Linear(d_model, 640)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        # z: (batch, 20, 52)
+        x = self.proj(z)                                    # (batch, 20, d_model)
+        x = x + self.pos_emb(self._pos_ids)                 # broadcast over batch
+        x = x + self.player_emb(self._player_ids)           # relative player ID
+        x = self.encoder(x)                                 # (batch, 20, d_model)
+        x = x.mean(dim=1)                                   # (batch, d_model)
+        return self.out_proj(x)                             # (batch, 640)
+
+
+def _build_z_encoder(z_encoder: str = 'resnet') -> nn.Module:
+    """Factory: return the appropriate z-encoder by name."""
+    if z_encoder == 'transformer':
+        return _ZEncoderTransformer()
+    return _ZEncoder()
+
+
 # ---------------------------------------------------------------------------
 # Play models
 # ---------------------------------------------------------------------------
 
 class LandlordResNetModel(nn.Module):
     """
-    ResNet model for the Landlord position.
+    Landlord model — supports both ResNet and Transformer z-encoders.
 
     z input : (batch, 20, 52)  — card-history encoding
     x input : (batch, 418)     — x_no_action (366) + action card encoding (52)
     output  : (batch, 1)       — estimated Q-value (Dueling: V(s) + A(s,a) - mean_A)
     """
-    _Z_FEAT  = 640   # flattened ResNet output
+    _Z_FEAT  = 640   # z-encoder output (both backends output 640)
     _X_DIM   = 418   # landlord x_batch width
 
-    def __init__(self):
+    def __init__(self, z_encoder: str = 'resnet'):
         super().__init__()
-        self.z_encoder = _ZEncoder()
+        self.z_encoder = _build_z_encoder(z_encoder)
         combined = self._Z_FEAT + self._X_DIM   # 1058
         # Shared advantage trunk
         self.fc1  = nn.Linear(combined, 512)
@@ -157,19 +242,19 @@ class LandlordResNetModel(nn.Module):
 
 class FarmerResNetModel(nn.Module):
     """
-    ResNet model for all three Farmer positions
-    (landlord_next, landlord_across, landlord_prev).
+    Farmer model — supports both ResNet and Transformer z-encoders.
+    Covers landlord_next, landlord_across, landlord_prev.
 
     z input : (batch, 20, 52)  — card-history encoding
     x input : (batch, 422)     — x_no_action (370) + action card encoding (52)
     output  : (batch, 1)       — estimated Q-value (Dueling: V(s) + A(s,a) - mean_A)
     """
-    _Z_FEAT  = 640   # flattened ResNet output
+    _Z_FEAT  = 640   # z-encoder output (both backends output 640)
     _X_DIM   = 422   # farmer x_batch width
 
-    def __init__(self):
+    def __init__(self, z_encoder: str = 'resnet'):
         super().__init__()
-        self.z_encoder = _ZEncoder()
+        self.z_encoder = _build_z_encoder(z_encoder)
         combined = self._Z_FEAT + self._X_DIM   # 1062
         # Shared advantage trunk
         self.fc1  = nn.Linear(combined, 512)
@@ -334,17 +419,19 @@ model_dict = {
 
 class Model:
     """
-    Wrapper for the four 4-player Doudizhu ResNet play models.
+    Wrapper for the four 4-player Doudizhu play models.
     Provides a uniform interface for training (dmc.py) and actors (utils.py).
+
+    z_encoder : 'resnet' (default) or 'transformer'
     """
-    def __init__(self, device=0):
+    def __init__(self, device=0, z_encoder: str = 'resnet'):
         self.models: dict = {}
         dev = torch.device('cpu') if device == 'cpu' \
               else torch.device('cuda:' + str(device))
-        self.models['landlord']        = LandlordResNetModel().to(dev)
-        self.models['landlord_next']   = FarmerResNetModel().to(dev)
-        self.models['landlord_across'] = FarmerResNetModel().to(dev)
-        self.models['landlord_prev']   = FarmerResNetModel().to(dev)
+        self.models['landlord']        = LandlordResNetModel(z_encoder).to(dev)
+        self.models['landlord_next']   = FarmerResNetModel(z_encoder).to(dev)
+        self.models['landlord_across'] = FarmerResNetModel(z_encoder).to(dev)
+        self.models['landlord_prev']   = FarmerResNetModel(z_encoder).to(dev)
 
     def forward(self, position: str, z: torch.Tensor, x: torch.Tensor,
                 training: bool = False, flags=None,
