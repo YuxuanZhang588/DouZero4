@@ -217,18 +217,20 @@ class LandlordResNetModel(nn.Module):
     def forward(self, z: torch.Tensor, x: torch.Tensor,
                 return_value: bool = False, flags=None,
                 exp_epsilon: float = None) -> dict:
-        z_feat = self.z_encoder(z)                            # (batch, 640)
-        # Advantage stream: concat z_feat with action features
-        feat   = torch.cat([z_feat, x], dim=-1)               # (batch, 1058)
-        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))       # (batch, 512)
-        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))       # (batch, 512)
-        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))       # (batch, 512)
-        adv    = self.fc4(feat)                               # (batch, 1)
-        # Value stream: state-only (z_feat, same for all candidate actions)
-        val    = F.leaky_relu(self.fc_v1(z_feat))             # (batch, 256)
-        val    = self.fc_v2(val)                              # (batch, 1)
-        # Dueling combination: Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
-        values = val + adv - adv.mean(dim=0, keepdim=True)    # (batch, 1)
+        # z: (num_candidates, 32, 52) — identical for all candidates (same game state)
+        # Run z_encoder ONCE on a single token, then broadcast → avoids O(N) encoder calls
+        z_feat = self.z_encoder(z[0:1]).expand(z.shape[0], -1)  # (num_candidates, 640)
+        # Advantage stream: concat z_feat with per-action features
+        feat   = torch.cat([z_feat, x], dim=-1)               # (num_candidates, 1058)
+        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))
+        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))
+        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))
+        adv    = self.fc4(feat)                               # (num_candidates, 1)
+        # Value stream: state-only, computed from the single z_feat
+        val    = F.leaky_relu(self.fc_v1(z_feat[0:1]))        # (1, 256)
+        val    = self.fc_v2(val).expand(z.shape[0], -1)       # (num_candidates, 1)
+        # Dueling: Q(s,a) = V(s) + A(s,a) - mean_a(A)
+        values = val + adv - adv.mean(dim=0, keepdim=True)
         if return_value:
             return dict(values=values)
         eps = exp_epsilon if exp_epsilon is not None else (
@@ -271,18 +273,20 @@ class FarmerResNetModel(nn.Module):
     def forward(self, z: torch.Tensor, x: torch.Tensor,
                 return_value: bool = False, flags=None,
                 exp_epsilon: float = None) -> dict:
-        z_feat = self.z_encoder(z)                            # (batch, 640)
-        # Advantage stream: concat z_feat with action features
-        feat   = torch.cat([z_feat, x], dim=-1)               # (batch, 1062)
-        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))       # (batch, 512)
-        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))       # (batch, 512)
-        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))       # (batch, 512)
-        adv    = self.fc4(feat)                               # (batch, 1)
-        # Value stream: state-only (z_feat, same for all candidate actions)
-        val    = F.leaky_relu(self.fc_v1(z_feat))             # (batch, 256)
-        val    = self.fc_v2(val)                              # (batch, 1)
-        # Dueling combination: Q(s,a) = V(s) + A(s,a) - mean_a(A(s,a))
-        values = val + adv - adv.mean(dim=0, keepdim=True)    # (batch, 1)
+        # z: (num_candidates, 32, 52) — identical for all candidates (same game state)
+        # Run z_encoder ONCE on a single token, then broadcast → avoids O(N) encoder calls
+        z_feat = self.z_encoder(z[0:1]).expand(z.shape[0], -1)  # (num_candidates, 640)
+        # Advantage stream: concat z_feat with per-action features
+        feat   = torch.cat([z_feat, x], dim=-1)               # (num_candidates, 1062)
+        feat   = F.leaky_relu(self.ln1(self.fc1(feat)))
+        feat   = F.leaky_relu(self.ln2(self.fc2(feat)))
+        feat   = F.leaky_relu(self.ln3(self.fc3(feat)))
+        adv    = self.fc4(feat)                               # (num_candidates, 1)
+        # Value stream: state-only, computed from the single z_feat
+        val    = F.leaky_relu(self.fc_v1(z_feat[0:1]))        # (1, 256)
+        val    = self.fc_v2(val).expand(z.shape[0], -1)       # (num_candidates, 1)
+        # Dueling: Q(s,a) = V(s) + A(s,a) - mean_a(A)
+        values = val + adv - adv.mean(dim=0, keepdim=True)
         if return_value:
             return dict(values=values)
         eps = exp_epsilon if exp_epsilon is not None else (
