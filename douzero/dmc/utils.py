@@ -112,7 +112,7 @@ def create_buffers(flags, device_iterator):
                 target=dict(size=(T,), dtype=torch.float32),
                 obs_x_no_action=dict(size=(T, x_dim), dtype=torch.int8),
                 obs_action=dict(size=(T, 52), dtype=torch.int8),  # 52 cards, no jokers
-                obs_z=dict(size=(T, 20, 52), dtype=torch.int8),   # 20 moves x 52-dim card encoding
+                obs_z=dict(size=(T, 32, 52), dtype=torch.int8),   # 32 moves x 52-dim card encoding
             )
             _buffers: Buffers = {key: [] for key in specs}
             for _ in range(flags.num_buffers):

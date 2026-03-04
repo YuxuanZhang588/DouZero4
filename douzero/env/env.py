@@ -247,20 +247,19 @@ def _cards2array(list_cards):
 
 def _action_seq_list2array(action_seq_list):
     """
-    Encode historical moves for ResNet input.
-    4-player: encode 20 actions (5 rounds x 4 players).
-    Output shape: (20, 52) — 20 individual moves, each a 52-dim card encoding.
-    This is used as Conv1D input with in_channels=20, length=52.
+    Encode historical moves for z input.
+    4-player: encode up to 32 actions (8 rounds x 4 players).
+    Output shape: (32, 52) — 32 individual moves, each a 52-dim card encoding.
     """
     action_seq_array = np.zeros((len(action_seq_list), 52))
     for row, list_cards in enumerate(action_seq_list):
         action_seq_array[row, :] = _cards2array(list_cards)
-    return action_seq_array  # Shape: (20, 52)
+    return action_seq_array  # Shape: (32, 52)
 
-def _process_action_seq(sequence, length=20):
+def _process_action_seq(sequence, length=32):
     """
-    Process action sequence for LSTM encoding.
-    4-player uses 20 moves (5 rounds x 4 players).
+    Process action sequence for z encoding.
+    4-player uses 32 moves (8 rounds x 4 players) for richer history.
     """
     sequence = sequence[-length:].copy()
     if len(sequence) < length:

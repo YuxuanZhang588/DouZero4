@@ -7,18 +7,18 @@ Supports two z-encoder backends (selectable via --z_encoder):
 
 ──────────────────────────────────────────────────────────────────────
 ResNet pipeline (z):
-  conv1  : Conv1d(20 → 40, k=3, s=2, p=1)  → (batch, 40, 26)
+  conv1  : Conv1d(32 → 40, k=3, s=2, p=1)  → (batch, 40, 26)
   layer1 : BasicBlock(40  → 40,  stride=2)  → (batch,  40, 13)
   layer2 : BasicBlock(40  → 80,  stride=2)  → (batch,  80,  7)
   layer3 : BasicBlock(80  → 160, stride=2)  → (batch, 160,  4)
   flatten                                    → (batch, 640)
 
 Transformer pipeline (z):
-  proj   : Linear(52, 128)                  → (batch, 20, 128)
-  + learned positional embedding (20, 128)
-  encoder: TransformerEncoder(d=128, heads=4, layers=4, ff=512)
-  mean-pool over 20 tokens                  → (batch, 128)
-  out_proj: Linear(128, 640)                → (batch, 640)
+  proj   : Linear(52, 256)                  → (batch, 32, 256)
+  + learned positional embedding (32, 256)
+  encoder: TransformerEncoder(d=256, heads=4, layers=4, ff=1024)
+  mean-pool over 32 tokens                  → (batch, 256)
+  out_proj: Linear(256, 640)                → (batch, 640)
 
 Both encoders output (batch, 640) — identical downstream FC head.
 ──────────────────────────────────────────────────────────────────────
@@ -87,12 +87,12 @@ class BasicBlock(nn.Module):
 class _ZEncoder(nn.Module):
     """
     ResNet encoder for the card-history tensor z.
-    Input : (batch, 20, 52)
+    Input : (batch, 32, 52)   — 32 history tokens × 52-dim card encoding
     Output: (batch, 640)
     """
     def __init__(self):
         super().__init__()
-        self.conv1  = nn.Conv1d(20, 40, kernel_size=3, stride=2, padding=1, bias=True)
+        self.conv1  = nn.Conv1d(32, 40, kernel_size=3, stride=2, padding=1, bias=True)
         self.bn1    = nn.BatchNorm1d(40, affine=False)
         self.layer1 = BasicBlock(40,  40,  stride=2)
         self.layer2 = BasicBlock(40,  80,  stride=2)
@@ -100,7 +100,7 @@ class _ZEncoder(nn.Module):
         # After all strides: length = 52 → 26 → 13 → 7 → 4   ⟹ 160×4 = 640
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        # z: (batch, 20, 52)
+        # z: (batch, 32, 52)
         out = F.leaky_relu(self.bn1(self.conv1(z)))  # (batch, 40, 26)
         out = self.layer1(out)                        # (batch, 40, 13)
         out = self.layer2(out)                        # (batch, 80,  7)
@@ -118,21 +118,21 @@ class _ZEncoderTransformer(nn.Module):
 
     Architecture:
       proj     : Linear(52, d_model)            token projection
-      pos_emb  : Embedding(20, d_model)         learned turn-order embedding
+      pos_emb  : Embedding(32, d_model)         learned turn-order embedding
       player_emb: Embedding(4, d_model)         learned player-ID embedding
                   (turn i belongs to player i%4 relative to current player)
       encoder  : TransformerEncoder(d_model, nhead, num_layers, dim_feedforward)
       mean-pool over sequence → Linear(d_model, 640)
 
-    Input : (batch, 20, 52)
+    Input : (batch, 32, 52)
     Output: (batch, 640)
     """
-    N_TOKENS  = 20
+    N_TOKENS  = 32
     CARD_DIM  = 52
     N_PLAYERS = 4
 
-    def __init__(self, d_model: int = 128, nhead: int = 4,
-                 num_layers: int = 4, dim_feedforward: int = 512,
+    def __init__(self, d_model: int = 256, nhead: int = 4,
+                 num_layers: int = 4, dim_feedforward: int = 1024,
                  dropout: float = 0.0):
         super().__init__()
         self.d_model = d_model

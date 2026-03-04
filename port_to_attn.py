@@ -52,7 +52,7 @@ print('\nSmoke-testing Transformer forward pass ...')
 ll = LandlordResNetModel(z_encoder='transformer')
 ff = FarmerResNetModel(z_encoder='transformer')
 
-z   = torch.zeros(5, 20, 52)
+z   = torch.zeros(5, 32, 52)   # 32-token history
 x_l = torch.zeros(5, 418)
 x_f = torch.zeros(5, 422)
 
@@ -65,7 +65,7 @@ wrapper = Model(device='cpu', z_encoder='transformer')
 out = wrapper.forward('landlord', z, x_l, exp_epsilon=1.0)
 print(f'  Model.forward action  : {out["action"]}')
 
-# Also verify resnet still works
+# Also verify resnet still works with 32-token input
 ll_r = LandlordResNetModel(z_encoder='resnet')
 out_r = ll_r.forward(z, x_l, return_value=True)
 print(f'  ResNet values shape   : {out_r["values"].shape}  (backward compat)')
